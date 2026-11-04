@@ -53,5 +53,8 @@ ensureColumn('deposit_requests', 'sender_address', 'TEXT');
 ensureColumn('deposit_requests', 'withdrawal_tx_hash', 'TEXT');
 ensureColumn('deposit_requests', 'sweep_fee_wei', 'TEXT');
 ensureColumn('deposit_requests', 'withdrawal_fee_wei', 'TEXT');
+ensureColumn('deposit_requests', 'sweep_attempts', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('deposit_requests', 'withdrawal_attempts', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('deposit_requests', 'last_error', 'TEXT');
 ensureColumn('seen_transactions', 'sender_address', 'TEXT');
 module.exports = db;

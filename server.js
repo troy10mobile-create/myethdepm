@@ -86,7 +86,8 @@ app.get('/api/deposits/:id', (req, res) => {
     sweepTxHash: row.sweep_tx_hash,
     withdrawalTxHash: row.withdrawal_tx_hash,
     sweepFeeEth: row.sweep_fee_wei ? formatEther(BigInt(row.sweep_fee_wei)) : null,
-    withdrawalFeeEth: row.withdrawal_fee_wei ? formatEther(BigInt(row.withdrawal_fee_wei)) : null
+    withdrawalFeeEth: row.withdrawal_fee_wei ? formatEther(BigInt(row.withdrawal_fee_wei)) : null,
+    lastError: row.last_error || null
   });
 });
 
