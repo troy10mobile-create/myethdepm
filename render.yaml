@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: eth-exchange-sepolia-test
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 20.19.0
+      - key: RPC_URL
+        value: https://ethereum-sepolia-rpc.publicnode.com
+      - key: CONFIRMATIONS
+        value: "3"
+      - key: POLL_INTERVAL_MS
+        value: "12000"
+      - key: GAS_CUSHION_MULTIPLIER
+        value: "1.5"
+      - key: AUTO_WITHDRAW_TEST
+        value: "1"
+      - key: RUN_MONITOR
+        value: "1"
+      - key: DB_PATH
+        value: ./storage/exchange.sqlite
+      - key: DEPOSIT_MNEMONIC
+        sync: false
+      - key: CENTRAL_PRIVATE_KEY
+        sync: false
