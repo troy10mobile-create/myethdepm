@@ -209,13 +209,22 @@ button:disabled { opacity: .55; cursor: wait; }
     </div>
 
     <h2>Withdraw from balance</h2>
-    <label for="wdAmount">Amount (ETH)</label>
+    <label for="wdAmount">Amount to receive at destination (ETH)</label>
     <input id="wdAmount" type="number" min="0.000000000000000001" step="any" placeholder="0.01">
 
     <label for="wdTo">Destination address</label>
     <input id="wdTo" type="text" placeholder="0x..." maxlength="42">
 
-    <button id="withdrawBtn">Send withdrawal</button>
+    <div id="wdPreview" class="result hidden">
+      <div class="row"><span>You receive</span><strong id="pvAmount">—</strong></div>
+      <div class="row"><span>1% fee</span><strong id="pvFee1">—</strong></div>
+      <div class="row"><span>Network fee (est.)</span><strong id="pvNet">—</strong></div>
+      <div class="row total"><strong>Total deducted from balance</strong><strong id="pvTotal">—</strong></div>
+      <div class="row"><span>Remaining after</span><strong id="pvRemain">—</strong></div>
+    </div>
+
+    <button id="withdrawBtn">Preview withdrawal</button>
+    <button id="confirmWithdrawBtn" class="hidden" style="background:#147a43">Confirm & send</button>
     <p id="wdMessage" class="muted"></p>
 
     <h2 style="margin-top:28px">Recent activity</h2>
@@ -440,24 +449,65 @@ async function refreshDashboard() {
   }
 }
 
+let pendingWithdraw = null;
+
 $('withdrawBtn').addEventListener('click', async () => {
   const btn = $('withdrawBtn');
   btn.disabled = true;
-  $('wdMessage').textContent = 'Sending withdrawal…';
+  $('wdMessage').textContent = 'Calculating fees…';
+  $('wdMessage').className = 'muted';
+  $('confirmWithdrawBtn').classList.add('hidden');
+  $('wdPreview').classList.add('hidden');
+  pendingWithdraw = null;
   try {
     const r = await fetch('/api/withdraw', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         amount: $('wdAmount').value,
-        toAddress: $('wdTo').value.trim()
+        toAddress: $('wdTo').value.trim(),
+        confirm: false
       })
+    });
+    const j = await r.json();
+    if (!r.ok) throw Error(j.error || (j.details ? JSON.stringify(j.details) : 'Error'));
+    // show preview
+    $('pvAmount').textContent = j.amount + ' ETH';
+    $('pvFee1').textContent = j.fee1pct + ' ETH';
+    $('pvNet').textContent = j.networkFee + ' ETH';
+    $('pvTotal').textContent = j.totalDebit + ' ETH';
+    $('pvRemain').textContent = j.remainingAfter + ' ETH';
+    $('wdPreview').classList.remove('hidden');
+    $('confirmWithdrawBtn').classList.remove('hidden');
+    pendingWithdraw = { amount: $('wdAmount').value, toAddress: $('wdTo').value.trim() };
+    $('wdMessage').textContent = 'Review the numbers, then confirm.';
+  } catch (e) {
+    $('wdMessage').textContent = e.message;
+    $('wdMessage').className = 'bad';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('confirmWithdrawBtn').addEventListener('click', async () => {
+  if (!pendingWithdraw) return;
+  const btn = $('confirmWithdrawBtn');
+  btn.disabled = true;
+  $('wdMessage').textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...pendingWithdraw, confirm: true })
     });
     const j = await r.json();
     if (!r.ok) throw Error(j.error);
     $('wdMessage').textContent = 'Sent! Tx: ' + j.txHash;
     $('wdMessage').className = 'good';
     $('wdAmount').value = '';
+    $('wdPreview').classList.add('hidden');
+    $('confirmWithdrawBtn').classList.add('hidden');
+    pendingWithdraw = null;
     refreshDashboard();
   } catch (e) {
     $('wdMessage').textContent = e.message;
