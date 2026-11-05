@@ -90,6 +90,21 @@ CREATE TABLE IF NOT EXISTS ledger (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+
+CREATE TABLE IF NOT EXISTS permanent_incoming (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  permanent_address TEXT NOT NULL,
+  tx_hash TEXT NOT NULL UNIQUE,
+  amount_wei TEXT NOT NULL,
+  sender_address TEXT,
+  status TEXT NOT NULL DEFAULT 'detected',
+  sweep_tx_hash TEXT,
+  sweep_attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS app_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

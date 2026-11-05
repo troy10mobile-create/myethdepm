@@ -1,6 +1,6 @@
 {
   "name": "eth-exchange-v2-sepolia",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "Sepolia ETH exchange prototype with auth, permanent addresses, random deposit indices, explicit withdrawal address and 79% fee forwarding. SQLite only.",
   "main": "server.js",

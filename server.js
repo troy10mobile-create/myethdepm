@@ -344,11 +344,12 @@ app.post('/api/withdraw', requireAuth, async (req, res) => {
   try {
     const amountStr = String(req.body.amount || '').trim();
     const toRaw = String(req.body.toAddress || '').trim();
+    const confirm = !!req.body.confirm;
 
     if (!/^\d+(\.\d{1,18})?$/.test(amountStr)) {
       return res.status(400).json({ error: 'Enter a valid ETH amount.' });
     }
-    const amount = parseEther(amountStr);
+    const amount = parseEther(amountStr); // amount the user wants the destination to receive
     if (amount <= 0n) return res.status(400).json({ error: 'Amount must be greater than zero.' });
 
     if (!isAddress(toRaw)) {
@@ -356,91 +357,132 @@ app.post('/api/withdraw', requireAuth, async (req, res) => {
     }
     const to = getAddress(toRaw);
 
-    // Check available balance
+    // 1% permanent fee on the requested amount
+    const fee1pct = amount / 100n;
+    // Network fee estimate (single transfer from central → destination)
+    const feeData = await provider.getFeeData();
+    const perGas = feeData.maxFeePerGas || feeData.gasPrice;
+    if (!perGas) return res.status(503).json({ error: 'Could not fetch gas price.' });
+    const gasLimit = (21000n * 150n) / 100n; // 21k + 50% cushion
+    const networkFee = gasLimit * perGas;
+
+    const totalDebit = amount + fee1pct + networkFee;
+
     const bal = db.prepare(
       "SELECT available_wei, reserved_wei FROM balances WHERE user_id = ? AND asset = 'ETH'"
     ).get(req.user.id);
-
     const available = BigInt(bal?.available_wei || '0');
-    if (available < amount) {
+
+    if (available < totalDebit) {
       return res.status(400).json({
-        error: `Insufficient balance. Available: ${formatEther(available)} ETH`
+        error: `Insufficient balance. You need ${formatEther(totalDebit)} ETH (amount + 1% fee + network). Available: ${formatEther(available)} ETH`,
+        details: {
+          amount: formatEther(amount),
+          fee1pct: formatEther(fee1pct),
+          networkFee: formatEther(networkFee),
+          totalDebit: formatEther(totalDebit),
+          available: formatEther(available)
+        }
       });
     }
 
-    // Reserve the amount
+    // Preview mode – just return the numbers for confirmation
+    if (!confirm) {
+      return res.json({
+        preview: true,
+        amount: formatEther(amount),
+        fee1pct: formatEther(fee1pct),
+        networkFee: formatEther(networkFee),
+        totalDebit: formatEther(totalDebit),
+        available: formatEther(available),
+        remainingAfter: formatEther(available - totalDebit),
+        to,
+        message: 'Confirm to proceed. Destination will receive the amount; 1% + network fee are deducted from your balance.'
+      });
+    }
+
+    // Reserve total debit
     db.prepare(`
       UPDATE balances
       SET available_wei = CAST(available_wei AS INTEGER) - ?,
           reserved_wei  = CAST(reserved_wei  AS INTEGER) + ?
       WHERE user_id = ? AND asset = 'ETH'
-    `).run(amount.toString(), amount.toString(), req.user.id);
+    `).run(totalDebit.toString(), totalDebit.toString(), req.user.id);
 
-    // Send from the anonymous central wallet for now (same one that holds swept funds)
+    // Send from registered central (fallback to anonymous if missing)
     const { Wallet } = require('ethers');
-    const central = new Wallet(process.env.ANONYMOUS_CENTRAL_PRIVATE_KEY, provider);
+    const centralKey = process.env.REGISTERED_CENTRAL_PRIVATE_KEY || process.env.ANONYMOUS_CENTRAL_PRIVATE_KEY;
+    const central = new Wallet(centralKey, provider);
 
-    const feeData = await provider.getFeeData();
     const estimate = await central.estimateGas({ to, value: amount });
-    const gasLimit = (estimate * 150n + 99n) / 100n;
-    const feeCap = feeData.maxFeePerGas || feeData.gasPrice;
-    const required = amount + gasLimit * feeCap;
+    const actualGasLimit = (estimate * 150n + 99n) / 100n;
     const centralBal = await provider.getBalance(central.address);
+    const required = amount + actualGasLimit * perGas;
 
     if (centralBal < required) {
-      // Release reservation
+      // release reservation
       db.prepare(`
         UPDATE balances
         SET available_wei = CAST(available_wei AS INTEGER) + ?,
             reserved_wei  = CAST(reserved_wei  AS INTEGER) - ?
         WHERE user_id = ? AND asset = 'ETH'
-      `).run(amount.toString(), amount.toString(), req.user.id);
+      `).run(totalDebit.toString(), totalDebit.toString(), req.user.id);
       return res.status(503).json({ error: 'Central wallet temporarily insufficient. Try again later.' });
     }
 
     const tx = await central.sendTransaction({
       to,
       value: amount,
-      gasLimit,
+      gasLimit: actualGasLimit,
       ...(feeData.maxFeePerGas != null
         ? { maxFeePerGas: feeData.maxFeePerGas, maxPriorityFeePerGas: feeData.maxPriorityFeePerGas }
         : { gasPrice: feeData.gasPrice })
     });
 
-    // Wait a short moment then finalize (simple version – production would use the monitor)
     const receipt = await tx.wait(1);
-
     if (receipt.status !== 1) {
-      // Release reservation on failure
       db.prepare(`
         UPDATE balances
         SET available_wei = CAST(available_wei AS INTEGER) + ?,
             reserved_wei  = CAST(reserved_wei  AS INTEGER) - ?
         WHERE user_id = ? AND asset = 'ETH'
-      `).run(amount.toString(), amount.toString(), req.user.id);
+      `).run(totalDebit.toString(), totalDebit.toString(), req.user.id);
       return res.status(500).json({ error: 'Withdrawal transaction failed on-chain.' });
     }
 
-    // Finalize: remove from reserved, write ledger
+    // Finalize: clear reservation, write ledger
     db.transaction(() => {
       db.prepare(`
         UPDATE balances
         SET reserved_wei = CAST(reserved_wei AS INTEGER) - ?
         WHERE user_id = ? AND asset = 'ETH'
-      `).run(amount.toString(), req.user.id);
+      `).run(totalDebit.toString(), req.user.id);
 
       db.prepare(`
         INSERT INTO ledger (user_id, deposit_id, entry_type, asset, amount_wei, note)
         VALUES (?, NULL, 'balance_withdrawal', 'ETH', ?, ?)
       `).run(req.user.id, amount.toString(), `Withdrawal to ${to} · tx ${tx.hash}`);
+
+      db.prepare(`
+        INSERT INTO ledger (user_id, deposit_id, entry_type, asset, amount_wei, note)
+        VALUES (?, NULL, 'withdrawal_1pct_fee', 'ETH', ?, ?)
+      `).run(req.user.id, fee1pct.toString(), `1% fee on withdrawal ${tx.hash}`);
+
+      db.prepare(`
+        INSERT INTO ledger (user_id, deposit_id, entry_type, asset, amount_wei, note)
+        VALUES (?, NULL, 'withdrawal_network_fee', 'ETH', ?, ?)
+      `).run(req.user.id, networkFee.toString(), `Network fee estimate for ${tx.hash}`);
     })();
 
     res.json({
       ok: true,
       txHash: tx.hash,
       amount: formatEther(amount),
+      fee1pct: formatEther(fee1pct),
+      networkFee: formatEther(networkFee),
+      totalDebit: formatEther(totalDebit),
       to,
-      message: 'Withdrawal sent successfully.'
+      message: 'Withdrawal sent. Destination received the amount; fees were deducted from your balance.'
     });
   } catch (e) {
     console.error('Withdraw error:', e);
