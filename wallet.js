@@ -1,49 +1,84 @@
-const { HDNodeWallet, Wallet } = require('ethers');
-const { randomInt, randomUUID } = require('crypto');
+const { HDNodeWallet, Wallet, getAddress } = require('ethers');
+const crypto = require('crypto');
+const db = require('./db');
 
-const MAX_BIP32_INDEX = 2147483647;
-
+/**
+ * Derive an address from a mnemonic at a specific index (BIP-44 path).
+ */
 function deriveWallet(mnemonic, index) {
-  if (!Number.isInteger(index) || index < 1 || index > MAX_BIP32_INDEX) {
-    throw new Error('Derivation index is outside the supported BIP-32 non-hardened range.');
-  }
   const root = HDNodeWallet.fromPhrase(mnemonic, undefined, 'm');
   return root.derivePath(`m/44'/60'/0'/0/${index}`);
 }
 
-function randomDerivationIndex() {
-  // crypto.randomInt uses a cryptographically secure random source; upper bound is exclusive.
-  return randomInt(1, MAX_BIP32_INDEX + 1);
+/**
+ * Generate a cryptographically random derivation index in a safe range.
+ * We avoid the very low indices and stay well under 2^31-1.
+ * Max ~10 digits as requested.
+ */
+function randomIndex() {
+  // 1 .. 2_000_000_000 (still well under BIP-44 limit of 2^31-1)
+  const buf = crypto.randomBytes(4);
+  const n = buf.readUInt32BE(0) % 1_999_999_999;
+  return n + 1;
 }
 
-async function allocateWallet(client, { mnemonic, mnemonicGroup, walletRole, userId = null, requestId = null }) {
-  // Retry only on an actual DB uniqueness collision. The database remains the authority.
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const index = randomDerivationIndex();
-    const wallet = deriveWallet(mnemonic, index);
-    const id = randomUUID();
-    try {
-      const inserted = await client.query(
-        `INSERT INTO wallet_registry
-         (id,user_id,wallet_role,derivation_index,derivation_path,address,mnemonic_group)
-         VALUES($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT DO NOTHING
-         RETURNING id, derivation_index, derivation_path, address`,
-        [id, userId, walletRole, index, `m/44'/60'/0'/0/${index}`, wallet.address, mnemonicGroup]
-      );
-      if (!inserted.rows[0]) continue;
-      await client.query(
-        `INSERT INTO wallet_index_history(wallet_role,mnemonic_group,derivation_index,address,request_id,user_id,event)
-         VALUES($1,$2,$3,$4,$5,$6,'assigned')`,
-        [walletRole, mnemonicGroup, index, wallet.address, requestId, userId]
-      );
-      return { ...inserted.rows[0], privateKey: wallet.privateKey };
-    } catch (err) {
-      if (err.code === '23505') continue;
-      throw err;
-    }
+/**
+ * Get a free random index for the given wallet type.
+ * Retries a few times on collision.
+ */
+function allocateRandomIndex(walletType) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const index = randomIndex();
+    const existing = db.prepare(
+      'SELECT 1 FROM used_indices WHERE wallet_type = ? AND derivation_index = ?'
+    ).get(walletType, index);
+    if (!existing) return index;
   }
-  throw new Error('Could not allocate a unique random wallet index after 30 attempts.');
+  // Extremely unlikely fallback
+  throw new Error('Could not allocate a free derivation index after multiple attempts.');
 }
 
-module.exports = { deriveWallet, randomDerivationIndex, allocateWallet, MAX_BIP32_INDEX };
+/**
+ * Create a temporary deposit address (anonymous flow).
+ * Records the index so it can be recovered later.
+ */
+function createAnonymousDepositAddress(mnemonic, depositId) {
+  const index = allocateRandomIndex('anonymous');
+  const wallet = deriveWallet(mnemonic, index);
+  const address = getAddress(wallet.address);
+
+  db.prepare(`
+    INSERT INTO used_indices (wallet_type, derivation_index, address, deposit_id)
+    VALUES ('anonymous', ?, ?, ?)
+  `).run(index, address, depositId);
+
+  return { index, address, wallet };
+}
+
+/**
+ * Assign a permanent address to a newly registered user.
+ */
+function assignPermanentAddress(mnemonic, userId) {
+  const index = allocateRandomIndex('registered');
+  const wallet = deriveWallet(mnemonic, index);
+  const address = getAddress(wallet.address);
+
+  db.prepare(`
+    INSERT INTO used_indices (wallet_type, derivation_index, address, user_id)
+    VALUES ('registered', ?, ?, ?)
+  `).run(index, address, userId);
+
+  return { index, address };
+}
+
+function centralWallet(privateKey, provider) {
+  return new Wallet(privateKey, provider);
+}
+
+module.exports = {
+  deriveWallet,
+  createAnonymousDepositAddress,
+  assignPermanentAddress,
+  centralWallet,
+  allocateRandomIndex
+};

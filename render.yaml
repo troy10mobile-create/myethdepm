@@ -1,32 +1,10 @@
 services:
   - type: web
-    name: myethdep-v2-foundation
-    runtime: node
+    name: eth-exchange-v2
+    env: node
     plan: free
     buildCommand: npm install
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
         value: 20
-      - key: NODE_ENV
-        value: production
-      - key: RPC_URL
-        sync: false
-      - key: DATABASE_URL
-        sync: false
-      - key: PGSSL
-        value: require
-      - key: ANONYMOUS_DEPOSIT_MNEMONIC
-        sync: false
-      - key: REGISTERED_DEPOSIT_MNEMONIC
-        sync: false
-      - key: ANONYMOUS_CENTRAL_PRIVATE_KEY
-        sync: false
-      - key: REGISTERED_CENTRAL_PRIVATE_KEY
-        sync: false
-      - key: FEE_RECIPIENT_ADDRESS
-        sync: false
-      - key: SESSION_SECRET
-        sync: false
-      - key: GAS_CUSHION_MULTIPLIER
-        value: "1.5"

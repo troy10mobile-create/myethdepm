@@ -1,21 +1,23 @@
 {
-  "name": "eth-exchange-sepolia-v2-foundation",
-  "version": "0.3.0",
+  "name": "eth-exchange-v2-sepolia",
+  "version": "2.0.0",
   "private": true,
-  "description": "Sepolia-only exchange V2 foundation: PostgreSQL, accounts, wallet registry and withdrawal-address requests",
+  "description": "Sepolia ETH exchange prototype with auth, permanent addresses, random deposit indices, explicit withdrawal address and 79% fee forwarding. SQLite only.",
   "main": "server.js",
-  "engines": { "node": "20.x" },
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check wallet.js && node --check db.js"
+    "generate-wallets": "node scripts/generate-test-wallets.js"
   },
   "dependencies": {
+    "better-sqlite3": "^11.8.1",
     "bcryptjs": "^2.4.3",
-    "connect-pg-simple": "^10.0.0",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^16.4.7",
     "ethers": "^6.13.5",
     "express": "^4.21.2",
-    "express-session": "^1.18.1",
-    "pg": "^8.13.1"
+    "uuid": "^11.0.5"
   }
 }
