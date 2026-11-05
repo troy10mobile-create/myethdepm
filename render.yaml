@@ -1,29 +1,32 @@
 services:
   - type: web
-    name: eth-exchange-sepolia-test
+    name: myethdep-v2-foundation
     runtime: node
     plan: free
     buildCommand: npm install
     startCommand: npm start
-    healthCheckPath: /healthz
     envVars:
       - key: NODE_VERSION
-        value: 20.19.0
+        value: 20
+      - key: NODE_ENV
+        value: production
       - key: RPC_URL
-        value: https://ethereum-sepolia-rpc.publicnode.com
-      - key: CONFIRMATIONS
-        value: "3"
-      - key: POLL_INTERVAL_MS
-        value: "12000"
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: PGSSL
+        value: require
+      - key: ANONYMOUS_DEPOSIT_MNEMONIC
+        sync: false
+      - key: REGISTERED_DEPOSIT_MNEMONIC
+        sync: false
+      - key: ANONYMOUS_CENTRAL_PRIVATE_KEY
+        sync: false
+      - key: REGISTERED_CENTRAL_PRIVATE_KEY
+        sync: false
+      - key: FEE_RECIPIENT_ADDRESS
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
       - key: GAS_CUSHION_MULTIPLIER
         value: "1.5"
-      - key: AUTO_WITHDRAW_TEST
-        value: "1"
-      - key: RUN_MONITOR
-        value: "1"
-      - key: DB_PATH
-        value: ./storage/exchange.sqlite
-      - key: DEPOSIT_MNEMONIC
-        sync: false
-      - key: CENTRAL_PRIVATE_KEY
-        sync: false
