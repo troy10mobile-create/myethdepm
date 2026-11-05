@@ -337,6 +337,154 @@ app.get('/api/deposits/:id', (req, res) => {
   });
 });
 
+
+// ---------- Logged-in balance withdrawal ----------
+
+app.post('/api/withdraw', requireAuth, async (req, res) => {
+  try {
+    const amountStr = String(req.body.amount || '').trim();
+    const toRaw = String(req.body.toAddress || '').trim();
+
+    if (!/^\d+(\.\d{1,18})?$/.test(amountStr)) {
+      return res.status(400).json({ error: 'Enter a valid ETH amount.' });
+    }
+    const amount = parseEther(amountStr);
+    if (amount <= 0n) return res.status(400).json({ error: 'Amount must be greater than zero.' });
+
+    if (!isAddress(toRaw)) {
+      return res.status(400).json({ error: 'Enter a valid destination address.' });
+    }
+    const to = getAddress(toRaw);
+
+    // Check available balance
+    const bal = db.prepare(
+      "SELECT available_wei, reserved_wei FROM balances WHERE user_id = ? AND asset = 'ETH'"
+    ).get(req.user.id);
+
+    const available = BigInt(bal?.available_wei || '0');
+    if (available < amount) {
+      return res.status(400).json({
+        error: `Insufficient balance. Available: ${formatEther(available)} ETH`
+      });
+    }
+
+    // Reserve the amount
+    db.prepare(`
+      UPDATE balances
+      SET available_wei = CAST(available_wei AS INTEGER) - ?,
+          reserved_wei  = CAST(reserved_wei  AS INTEGER) + ?
+      WHERE user_id = ? AND asset = 'ETH'
+    `).run(amount.toString(), amount.toString(), req.user.id);
+
+    // Send from the anonymous central wallet for now (same one that holds swept funds)
+    const { Wallet } = require('ethers');
+    const central = new Wallet(process.env.ANONYMOUS_CENTRAL_PRIVATE_KEY, provider);
+
+    const feeData = await provider.getFeeData();
+    const estimate = await central.estimateGas({ to, value: amount });
+    const gasLimit = (estimate * 150n + 99n) / 100n;
+    const feeCap = feeData.maxFeePerGas || feeData.gasPrice;
+    const required = amount + gasLimit * feeCap;
+    const centralBal = await provider.getBalance(central.address);
+
+    if (centralBal < required) {
+      // Release reservation
+      db.prepare(`
+        UPDATE balances
+        SET available_wei = CAST(available_wei AS INTEGER) + ?,
+            reserved_wei  = CAST(reserved_wei  AS INTEGER) - ?
+        WHERE user_id = ? AND asset = 'ETH'
+      `).run(amount.toString(), amount.toString(), req.user.id);
+      return res.status(503).json({ error: 'Central wallet temporarily insufficient. Try again later.' });
+    }
+
+    const tx = await central.sendTransaction({
+      to,
+      value: amount,
+      gasLimit,
+      ...(feeData.maxFeePerGas != null
+        ? { maxFeePerGas: feeData.maxFeePerGas, maxPriorityFeePerGas: feeData.maxPriorityFeePerGas }
+        : { gasPrice: feeData.gasPrice })
+    });
+
+    // Wait a short moment then finalize (simple version – production would use the monitor)
+    const receipt = await tx.wait(1);
+
+    if (receipt.status !== 1) {
+      // Release reservation on failure
+      db.prepare(`
+        UPDATE balances
+        SET available_wei = CAST(available_wei AS INTEGER) + ?,
+            reserved_wei  = CAST(reserved_wei  AS INTEGER) - ?
+        WHERE user_id = ? AND asset = 'ETH'
+      `).run(amount.toString(), amount.toString(), req.user.id);
+      return res.status(500).json({ error: 'Withdrawal transaction failed on-chain.' });
+    }
+
+    // Finalize: remove from reserved, write ledger
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE balances
+        SET reserved_wei = CAST(reserved_wei AS INTEGER) - ?
+        WHERE user_id = ? AND asset = 'ETH'
+      `).run(amount.toString(), req.user.id);
+
+      db.prepare(`
+        INSERT INTO ledger (user_id, deposit_id, entry_type, asset, amount_wei, note)
+        VALUES (?, NULL, 'balance_withdrawal', 'ETH', ?, ?)
+      `).run(req.user.id, amount.toString(), `Withdrawal to ${to} · tx ${tx.hash}`);
+    })();
+
+    res.json({
+      ok: true,
+      txHash: tx.hash,
+      amount: formatEther(amount),
+      to,
+      message: 'Withdrawal sent successfully.'
+    });
+  } catch (e) {
+    console.error('Withdraw error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Recent activity for the logged-in user
+app.get('/api/activity', requireAuth, (req, res) => {
+  const rows = db.prepare(`
+    SELECT entry_type, amount_wei, note, created_at
+    FROM ledger
+    WHERE user_id = ?
+    ORDER BY id DESC
+    LIMIT 30
+  `).all(req.user.id);
+
+  res.json({
+    activity: rows.map(r => ({
+      type: r.entry_type,
+      amount: formatEther(BigInt(r.amount_wei)),
+      note: r.note,
+      at: r.created_at
+    }))
+  });
+});
+
+// Chain info (multi-EVM prepared, only Sepolia active)
+app.get('/api/chains', (_req, res) => {
+  try {
+    const { CHAINS, getActiveChain } = require('./chains');
+    const active = getActiveChain();
+    res.json({
+      active: { key: 'sepolia', ...active },
+      available: Object.entries(CHAINS)
+        .filter(([, c]) => c.active)
+        .map(([key, c]) => ({ key, name: c.name, id: c.id }))
+    });
+  } catch (e) {
+    res.json({ active: { key: 'sepolia', name: 'Sepolia' }, available: [] });
+  }
+});
+
+
 // ---------- Start ----------
 
 const port = Number(process.env.PORT || 3000);
